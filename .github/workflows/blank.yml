@@ -15,7 +15,7 @@ on:
 jobs:
   generate-device-tree:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     
     steps:
     - name: Checkout repository
