@@ -18,15 +18,19 @@ on:
       IMG_URL:
         description: 'recovery/boot 镜像直链地址'
         required: true
-        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/recovery.img'
+        default: 'https://github.com/momo54181/action_build_twrp_device_tree/raw/main/recovery.img'
+      PROP_DEFAULT_URL:
+        description: 'prop.default 文件直链 (可选，OPPO 设备可直接提供此链接，无需填写下方两个 build.prop 链接)'
+        required: false
+        default: ''
       SYSTEM_BUILD_PROP_URL:
-        description: 'system/build.prop 直链地址 (可选，OPPO 设备需提供)'
+        description: 'system/build.prop 直链地址 (可选，若已提供 prop.default 直链可忽略)'
         required: false
-        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/prop/system/build.prop'
+        default: ''
       VENDOR_BUILD_PROP_URL:
-        description: 'vendor/build.prop 直链地址 (可选，OPPO 设备需提供)'
+        description: 'vendor/build.prop 直链地址 (可选，若已提供 prop.default 直链可忽略)'
         required: false
-        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/prop/vendor/build.prop'
+        default: ''
 
 jobs:
   generate-device-tree:
@@ -69,40 +73,63 @@ jobs:
           -o device_tree_output \
           recovery.img
 
-    - name: Merge OPPO build.prop into prop.default
-      if: github.event.inputs.MANUFACTURER == 'oppo' && github.event.inputs.SYSTEM_BUILD_PROP_URL != '' && github.event.inputs.VENDOR_BUILD_PROP_URL != ''
+    - name: Setup prop.default for OPPO
+      if: github.event.inputs.MANUFACTURER == 'oppo'
+      env:
+        PROP_DEFAULT_URL: ${{ github.event.inputs.PROP_DEFAULT_URL }}
+        SYSTEM_BUILD_PROP_URL: ${{ github.event.inputs.SYSTEM_BUILD_PROP_URL }}
+        VENDOR_BUILD_PROP_URL: ${{ github.event.inputs.VENDOR_BUILD_PROP_URL }}
       run: |
-        node -e "
+        cat << 'SCRIPT' > setup_prop.js
         const https = require('https');
+        const http = require('http');
         const fs = require('fs');
-        const urls = [
-          '${{ github.event.inputs.SYSTEM_BUILD_PROP_URL }}',
-          '${{ github.event.inputs.VENDOR_BUILD_PROP_URL }}'
-        ];
-        async function download(url) {
+
+        function download(url) {
           return new Promise((resolve, reject) => {
-            https.get(url, (res) => {
+            const client = url.startsWith('https') ? https : http;
+            client.get(url, (res) => {
+              // 处理重定向
+              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                return resolve(download(res.headers.location));
+              }
               let data = '';
               res.on('data', chunk => data += chunk);
               res.on('end', () => resolve(data));
             }).on('error', reject);
           });
         }
-        (async () => {
-          try {
-            const systemProp = await download(urls[0]);
-            const vendorProp = await download(urls[1]);
+
+        async function main() {
+          const propDefaultUrl = process.env.PROP_DEFAULT_URL;
+          const systemUrl = process.env.SYSTEM_BUILD_PROP_URL;
+          const vendorUrl = process.env.VENDOR_BUILD_PROP_URL;
+
+          if (propDefaultUrl) {
+            console.log('下载 prop.default 直链...');
+            const content = await download(propDefaultUrl);
+            fs.writeFileSync('device_tree_output/prop.default', content);
+            console.log('prop.default 已从直链保存。');
+          } else if (systemUrl && vendorUrl) {
+            console.log('下载 system 与 vendor build.prop 并合并...');
+            const systemProp = await download(systemUrl);
+            const vendorProp = await download(vendorUrl);
             const merged = systemProp + '\n' + vendorProp;
             fs.writeFileSync('device_tree_output/prop.default', merged);
-            console.log('prop.default merged successfully.');
-          } catch (e) {
-            console.error('Failed to download or merge build.prop:', e);
-            process.exit(1);
+            console.log('prop.default 已合并并保存。');
+          } else {
+            console.log('未提供 prop.default 直链或两个 build.prop 直链，跳过 prop.default 生成。');
           }
-        })();
-        " 
+        }
 
-    - name: Compress device tree (with prop.default if OPPO)
+        main().catch(err => {
+          console.error(err);
+          process.exit(1);
+        });
+        SCRIPT
+        node setup_prop.js
+
+    - name: Compress device tree
       run: |
         cd device_tree_output
         zip -r ../DeviceTree_${{ github.run_number }}.zip .
@@ -118,6 +145,7 @@ jobs:
           Automatically generated TWRP device tree
           Build run: ${{ github.run_number }}
           Source image: ${{ github.event.inputs.IMG_URL }}
-          ${{ github.event.inputs.MANUFACTURER == 'oppo' && 'System & vendor build.prop merged into prop.default' || '' }}
+          ${{ github.event.inputs.MANUFACTURER == 'oppo' && github.event.inputs.PROP_DEFAULT_URL && 'prop.default 由直链下载' || '' }}
+          ${{ github.event.inputs.MANUFACTURER == 'oppo' && !github.event.inputs.PROP_DEFAULT_URL && github.event.inputs.SYSTEM_BUILD_PROP_URL && github.event.inputs.VENDOR_BUILD_PROP_URL && 'prop.default 由 system + vendor build.prop 合并生成' || '' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
