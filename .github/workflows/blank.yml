@@ -23,7 +23,7 @@ on:
 jobs:
   generate-device-tree:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: self-hosted   # 确保 runner 已安装 Python 3、Git，且可连外网
+    runs-on: ubuntu-latest   # 确保 runner 已安装 Python 3、Git，且可连外网
 
     steps:
     - name: Checkout repository
