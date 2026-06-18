@@ -15,12 +15,22 @@ on:
 jobs:
   generate-device-tree:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: self-hosted
+    runs-on: ubuntu-latest    # 请确保该runner 或者hostself服务器 上已安装 Node.js 24，或者将由 setup-node 自动安装
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
+    - name: Setup Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        # 若自托管 runner 无法访问公网下载 Node，可设置 check-latest: false
+        # 并确保 runner 已预装 Node 24，然后注释掉此步骤
+
+    - name: Verify Node.js version
+      run: node --version
+
     - name: Set up environment
       run: |
         sudo apt-get update
@@ -31,31 +41,31 @@ jobs:
           wget \
           zip \
           unzip
-        
+
     - name: Install TWRP generator
       run: |
         pip3 install --upgrade twrpdtgen
-        
+
     - name: Download recovery image
       run: |
         wget -O recovery.img "${{ github.event.inputs.IMG_URL }}"
-        file recovery.img || true  # Display file info for debugging
-      
+        file recovery.img || true  # 显示文件信息便于调试
+
     - name: Generate device tree
       run: |
         mkdir -p device_tree_output
         python3 -m twrpdtgen \
           -o device_tree_output \
           recovery.img
-        
+
     - name: Compress device tree
       run: |
         cd device_tree_output
         zip -r ../DeviceTree_${{ github.run_number }}.zip .
         cd ..
-        
+
     - name: Create release with device tree
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2   # 升级到 v2，内部使用较新 Node 版本
       with:
         files: DeviceTree_${{ github.run_number }}.zip
         name: TWRP_Device_Tree_${{ github.run_number }}
@@ -66,3 +76,4 @@ jobs:
           Source image: ${{ github.event.inputs.IMG_URL }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
