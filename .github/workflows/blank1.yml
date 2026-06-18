@@ -1,4 +1,4 @@
-name: TWRP设备树自动化构建 新hostself版
+name: TWRP设备树自动化构建 新selfhost版
 
 on:
   workflow_dispatch:
@@ -18,7 +18,15 @@ on:
       IMG_URL:
         description: 'recovery/boot 镜像直链地址'
         required: true
-        default: 'https://github.com/momo54181/action_build_twrp_device_tree/raw/main/recovery.img'
+        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/recovery.img'
+      SYSTEM_BUILD_PROP_URL:
+        description: 'system/build.prop 直链地址 (可选，OPPO 设备需提供)'
+        required: false
+        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/prop/system/build.prop'
+      VENDOR_BUILD_PROP_URL:
+        description: 'vendor/build.prop 直链地址 (可选，OPPO 设备需提供)'
+        required: false
+        default: 'https://github.com/Blacklight139/action_build_twrp_device_tree/raw/main/prop/vendor/build.prop'
 
 jobs:
   generate-device-tree:
@@ -39,7 +47,12 @@ jobs:
           wget \
           zip \
           unzip
-        
+
+    - name: Set up Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
     - name: Install TWRP generator
       run: |
         pip3 install --upgrade twrpdtgen
@@ -47,7 +60,7 @@ jobs:
     - name: Download recovery image
       run: |
         wget -O recovery.img "${{ github.event.inputs.IMG_URL }}"
-        file recovery.img || true  # Display file info for debugging
+        file recovery.img || true  # 输出文件类型用于调试
       
     - name: Generate device tree
       run: |
@@ -55,8 +68,41 @@ jobs:
         python3 -m twrpdtgen \
           -o device_tree_output \
           recovery.img
-        
-    - name: Compress device tree
+
+    - name: Merge OPPO build.prop into prop.default
+      if: github.event.inputs.MANUFACTURER == 'oppo' && github.event.inputs.SYSTEM_BUILD_PROP_URL != '' && github.event.inputs.VENDOR_BUILD_PROP_URL != ''
+      run: |
+        node -e "
+        const https = require('https');
+        const fs = require('fs');
+        const urls = [
+          '${{ github.event.inputs.SYSTEM_BUILD_PROP_URL }}',
+          '${{ github.event.inputs.VENDOR_BUILD_PROP_URL }}'
+        ];
+        async function download(url) {
+          return new Promise((resolve, reject) => {
+            https.get(url, (res) => {
+              let data = '';
+              res.on('data', chunk => data += chunk);
+              res.on('end', () => resolve(data));
+            }).on('error', reject);
+          });
+        }
+        (async () => {
+          try {
+            const systemProp = await download(urls[0]);
+            const vendorProp = await download(urls[1]);
+            const merged = systemProp + '\n' + vendorProp;
+            fs.writeFileSync('device_tree_output/prop.default', merged);
+            console.log('prop.default merged successfully.');
+          } catch (e) {
+            console.error('Failed to download or merge build.prop:', e);
+            process.exit(1);
+          }
+        })();
+        " 
+
+    - name: Compress device tree (with prop.default if OPPO)
       run: |
         cd device_tree_output
         zip -r ../DeviceTree_${{ github.run_number }}.zip .
@@ -72,5 +118,6 @@ jobs:
           Automatically generated TWRP device tree
           Build run: ${{ github.run_number }}
           Source image: ${{ github.event.inputs.IMG_URL }}
+          ${{ github.event.inputs.MANUFACTURER == 'oppo' && 'System & vendor build.prop merged into prop.default' || '' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
