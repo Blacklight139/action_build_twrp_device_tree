@@ -1,4 +1,4 @@
-name: TWRP设备树自动化构建 新版
+name: TWRP设备树自动化构建 新hostself版
 
 on:
   workflow_dispatch:
