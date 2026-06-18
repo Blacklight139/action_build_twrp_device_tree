@@ -1,62 +1,124 @@
-name: Generate TWRP Device Tree
+name: Generate TWRP Device Tree 新runner版本
 
 on:
   workflow_dispatch:
     inputs:
       LIBRARY_NAME:
-        description: 'Library name for the device tree'
+        description: '库名称 (仅用于显示)'
         required: true
         default: 'Twrp_Device_Generator'
+      DEVICE_CODENAME:
+        description: '设备代号 (如 beyond0lte、sakura)'
+        required: true
+        default: 'aosp_arm64'
+      MANUFACTURER:
+        description: '制造商 (如 samsung、xiaomi)，可选'
+        required: false
+        default: 'generic'
       IMG_URL:
-        description: 'URL to recovery/boot image'
+        description: 'recovery/boot 镜像直链地址'
         required: true
         default: 'https://github.com/momo54181/action_build_twrp_device_tree/raw/main/recovery.img'
 
 jobs:
   generate-device-tree:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-latest    # 请确保该runner 或者hostself服务器 上已安装 Node.js 24，或者将由 setup-node 自动安装
+    runs-on: ubuntu-latest   # 确保 runner 已安装 Python 3、Git，并可连接外网
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup Node.js 24
+    - name: Setup Node.js 24 (环境兼容)
       uses: actions/setup-node@v4
       with:
         node-version: '24'
-        # 若自托管 runner 无法访问公网下载 Node，可设置 check-latest: false
-        # 并确保 runner 已预装 Node 24，然后注释掉此步骤
+        # 自托管 runner 若已预装 Node 24 可跳过此步
 
-    - name: Verify Node.js version
-      run: node --version
-
-    - name: Set up environment
+    - name: Install system packages
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          python3 \
-          python3-pip \
-          cpio \
-          wget \
-          zip \
-          unzip
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          python3 python3-pip cpio wget zip unzip gzip xz-utils lz4 file
 
-    - name: Install TWRP generator
+    - name: Upgrade pip & install twrpdtgen
       run: |
-        pip3 install --upgrade twrpdtgen
+        pip3 install --upgrade pip setuptools wheel
+        pip3 install twrpdtgen
 
     - name: Download recovery image
       run: |
         wget -O recovery.img "${{ github.event.inputs.IMG_URL }}"
-        file recovery.img || true  # 显示文件信息便于调试
+        echo "::group::Image File Info"
+        file recovery.img || true
+        echo "::endgroup::"
+
+    # ---------- 修复 build.prop 缺失属性 ----------
+    - name: Prepare AIK and patch build.prop
+      id: patch
+      run: |
+        mkdir -p aik_workdir
+        cd aik_workdir
+
+        # 下载 Android Image Kitchen
+        wget -q https://github.com/osm0sis/Android-Image-Kitchen/archive/refs/heads/master.zip -O AIK.zip
+        unzip -q AIK.zip
+        cd Android-Image-Kitchen-master
+        chmod +x *.sh
+
+        # 将镜像复制到 AIK 目录并重命名为 recovery.img (AIK 需要此名称)
+        cp ../../recovery.img ./recovery.img
+
+        # 解包
+        ./unpackimg.sh recovery.img 2>&1 | tee unpack.log
+        if [ ! -d "ramdisk" ]; then
+          echo "::error::AIK 解包失败，ramdisk 目录不存在，请确认镜像是标准 Android boot/recovery 格式"
+          exit 1
+        fi
+
+        # 注入缺失的属性
+        CODENAME="${{ github.event.inputs.DEVICE_CODENAME }}"
+        MANUFACTURER="${{ github.event.inputs.MANUFACTURER }}"
+        BUILD_PROP="ramdisk/build.prop"
+
+        if [ -f "$BUILD_PROP" ]; then
+          # 追加可能缺失的关键属性（如果已经存在就不会重复）
+          grep -q "ro.product.system.device" "$BUILD_PROP" || echo "ro.product.system.device=$CODENAME" >> "$BUILD_PROP"
+          grep -q "ro.product.device" "$BUILD_PROP" || echo "ro.product.device=$CODENAME" >> "$BUILD_PROP"
+          grep -q "ro.build.product" "$BUILD_PROP" || echo "ro.build.product=$CODENAME" >> "$BUILD_PROP"
+          grep -q "ro.product.manufacturer" "$BUILD_PROP" || echo "ro.product.manufacturer=$MANUFACTURER" >> "$BUILD_PROP"
+          echo "已补充 build.prop 属性"
+        else
+          echo "ramdisk 中未找到 build.prop，创建最小属性文件"
+          cat > "$BUILD_PROP" << EOF
+        ro.product.system.device=$CODENAME
+        ro.product.device=$CODENAME
+        ro.build.product=$CODENAME
+        ro.product.manufacturer=$MANUFACTURER
+        ro.product.system.manufacturer=$MANUFACTURER
+        ro.product.model=$CODENAME
+        ro.system.build.version.release=10
+        ro.build.version.release=10
+        EOF
+        fi
+
+        # 重打包
+        ./repackimg.sh 2>&1 | tee repack.log
+        if [ ! -f "image-new.img" ]; then
+          echo "::error::AIK 重打包失败，未生成 image-new.img"
+          exit 1
+        fi
+
+        # 将修补后的镜像复制回工作目录
+        cp image-new.img ../../recovery_patched.img
+        echo "修补完成，生成 recovery_patched.img"
 
     - name: Generate device tree
       run: |
         mkdir -p device_tree_output
         python3 -m twrpdtgen \
           -o device_tree_output \
-          recovery.img
+          recovery_patched.img
 
     - name: Compress device tree
       run: |
@@ -64,16 +126,16 @@ jobs:
         zip -r ../DeviceTree_${{ github.run_number }}.zip .
         cd ..
 
-    - name: Create release with device tree
-      uses: softprops/action-gh-release@v2   # 升级到 v2，内部使用较新 Node 版本
+    - name: Create release
+      uses: softprops/action-gh-release@v2
       with:
         files: DeviceTree_${{ github.run_number }}.zip
         name: TWRP_Device_Tree_${{ github.run_number }}
         tag_name: dt-${{ github.run_number }}
         body: |
-          Automatically generated TWRP device tree
-          Build run: ${{ github.run_number }}
-          Source image: ${{ github.event.inputs.IMG_URL }}
+          📱 设备代号: ${{ github.event.inputs.DEVICE_CODENAME }}
+          🏷️  制造商: ${{ github.event.inputs.MANUFACTURER }}
+          🔗 源镜像: ${{ github.event.inputs.IMG_URL }}
+          🏗️  构建编号: ${{ github.run_number }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
