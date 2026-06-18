@@ -30,3 +30,4 @@
 - ro.product.first_api_level=23 #安卓api版本号，如安卓6.0是23  
 - 2.如果你的设备是oppo，且出现了AssertionError: Property ro.product.system.device could not be found in build.prop  
 - system/build.prop和vendor/build.prop的内容一起合并到/prop.default然后打包生成    
+感谢momo的源码支持Blacklight139在原作者的基础上进行了优化
