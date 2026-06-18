@@ -23,136 +23,54 @@ on:
 jobs:
   generate-device-tree:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: self-hosted   # 确保 runner 已安装 Python 3、Git，且可连外网
-
+    runs-on: self-hosted
+    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-
-    - name: Setup Node.js 24 (平台兼容)
-      uses: actions/setup-node@v4
-      with:
-        node-version: '24'
-        # 若 runner 已预装 Node 24，可注释掉本步骤
-
-    - name: Install system packages
+      
+    - name: Set up environment
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq \
-          python3 python3-pip cpio wget zip unzip gzip xz-utils lz4 file
-
-    - name: Upgrade pip & install twrpdtgen
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3 \
+          python3-pip \
+          cpio \
+          wget \
+          zip \
+          unzip
+        
+    - name: Install TWRP generator
       run: |
-        pip3 install --upgrade pip setuptools wheel
-        pip3 install twrpdtgen
-
-    - name: Download recovery/boot image
+        pip3 install --upgrade twrpdtgen
+        
+    - name: Download recovery image
       run: |
         wget -O recovery.img "${{ github.event.inputs.IMG_URL }}"
-        echo "::group::Image File Info"
-        file recovery.img || true
-        echo "::endgroup::"
-
-    # ---------- 使用 AIK 解包并注入缺失的 build.prop 属性 ----------
-    - name: Patch build.prop via AIK
-      id: patch
-      run: |
-        mkdir -p aik_workdir && cd aik_workdir
-
-        # 下载稳定版 AIK（确保目录名称固定）
-        AIK_URL="https://github.com/osm0sis/Android-Image-Kitchen/archive/refs/tags/v3.8.zip"
-        wget -q "$AIK_URL" -O AIK.zip
-        unzip -q AIK.zip
-
-        # 动态识别解压后的目录（兼容不同 Tag）
-        AIK_DIR=$(ls -d Android-Image-Kitchen-* | head -1)
-        if [ -z "$AIK_DIR" ]; then
-          echo "::error::AIK 目录未找到，解压失败"
-          exit 1
-        fi
-        cd "$AIK_DIR"
-        chmod +x *.sh
-
-        # 将镜像复制到 AIK 目录（AIK 要求镜像名为原文件名）
-        cp ../../recovery.img ./recovery.img
-
-        # 解包
-        echo "::group::AIK Unpacking"
-        ./unpackimg.sh recovery.img 2>&1 | tee unpack.log
-        if [ ! -d "ramdisk" ]; then
-          echo "::error::解包失败，未生成 ramdisk 目录，请确认镜像为有效 Android boot/recovery 格式"
-          exit 1
-        fi
-        echo "::endgroup::"
-
-        # 注入关键属性
-        CODENAME="${{ github.event.inputs.DEVICE_CODENAME }}"
-        MANUFACTURER="${{ github.event.inputs.MANUFACTURER }}"
-        BUILD_PROP="ramdisk/build.prop"
-
-        if [ -f "$BUILD_PROP" ]; then
-          # 追加可能缺失的属性（已存在则跳过）
-          grep -q "ro.product.system.device" "$BUILD_PROP" || echo "ro.product.system.device=$CODENAME" >> "$BUILD_PROP"
-          grep -q "ro.product.device"         "$BUILD_PROP" || echo "ro.product.device=$CODENAME" >> "$BUILD_PROP"
-          grep -q "ro.build.product"          "$BUILD_PROP" || echo "ro.build.product=$CODENAME" >> "$BUILD_PROP"
-          grep -q "ro.product.manufacturer"   "$BUILD_PROP" || echo "ro.product.manufacturer=$MANUFACTURER" >> "$BUILD_PROP"
-          grep -q "ro.product.system.manufacturer" "$BUILD_PROP" || echo "ro.product.system.manufacturer=$MANUFACTURER" >> "$BUILD_PROP"
-          grep -q "ro.product.model"          "$BUILD_PROP" || echo "ro.product.model=$CODENAME" >> "$BUILD_PROP"
-          grep -q "ro.product.system.model"   "$BUILD_PROP" || echo "ro.product.system.model=$CODENAME" >> "$BUILD_PROP"
-          grep -q "ro.build.version.release"  "$BUILD_PROP" || echo "ro.build.version.release=10" >> "$BUILD_PROP"
-          grep -q "ro.system.build.version.release" "$BUILD_PROP" || echo "ro.system.build.version.release=10" >> "$BUILD_PROP"
-          echo "::notice::已补全 build.prop 必要属性"
-        else
-          echo "::warning::ramdisk 中未找到 build.prop，创建最小属性文件"
-          cat > "$BUILD_PROP" << EOF
-        ro.product.system.device=$CODENAME
-        ro.product.device=$CODENAME
-        ro.build.product=$CODENAME
-        ro.product.manufacturer=$MANUFACTURER
-        ro.product.system.manufacturer=$MANUFACTURER
-        ro.product.model=$CODENAME
-        ro.product.system.model=$CODENAME
-        ro.build.version.release=10
-        ro.system.build.version.release=10
-        EOF
-        fi
-
-        # 重打包
-        echo "::group::AIK Repacking"
-        ./repackimg.sh 2>&1 | tee repack.log
-        if [ ! -f "image-new.img" ]; then
-          echo "::error::重打包失败，未生成 image-new.img"
-          exit 1
-        fi
-        echo "::endgroup::"
-
-        # 将修补后的镜像拷贝回工作目录
-        cp image-new.img ../../recovery_patched.img
-        echo "修补完成，输出文件 recovery_patched.img"
-
+        file recovery.img || true  # Display file info for debugging
+      
     - name: Generate device tree
       run: |
         mkdir -p device_tree_output
         python3 -m twrpdtgen \
           -o device_tree_output \
-          recovery_patched.img
-
+          recovery.img
+        
     - name: Compress device tree
       run: |
         cd device_tree_output
         zip -r ../DeviceTree_${{ github.run_number }}.zip .
         cd ..
-
-    - name: Create release
-      uses: softprops/action-gh-release@v2
+        
+    - name: Create release with device tree
+      uses: softprops/action-gh-release@v1
       with:
         files: DeviceTree_${{ github.run_number }}.zip
         name: TWRP_Device_Tree_${{ github.run_number }}
         tag_name: dt-${{ github.run_number }}
         body: |
-          📱 设备代号: ${{ github.event.inputs.DEVICE_CODENAME }}
-          🏷️  制造商: ${{ github.event.inputs.MANUFACTURER }}
-          🔗 源镜像: ${{ github.event.inputs.IMG_URL }}
-          🏗️  构建编号: ${{ github.run_number }}
+          Automatically generated TWRP device tree
+          Build run: ${{ github.run_number }}
+          Source image: ${{ github.event.inputs.IMG_URL }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
